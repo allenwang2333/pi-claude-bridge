@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Fix: tools activated mid-turn never reached Claude (#125, issue #176)** — a tool that changes pi's active tools from inside a tool call (`tool_search` loading a deferred MCP tool, pi-web-access's `web_enable`) had no effect until the next user message: the bridge's MCP server was fixed at query start, so Claude answered "No such tool available" or fell back to other tools. The bridge now replaces the served tools on the live server, sends `tools/list_changed`, and holds the tool result until Claude Code has re-listed; delivering first races the re-list and loses (`diag/probe-mid-turn-tools.mjs`). Thanks @danth3b0t and @Piesson.
 - **Fix: abort ignored after a terminated tool batch (#200, issue #199)** — when a run ended with Claude Code's query parked at a tool call (`terminate: true`), aborting the next run did nothing. Each run that continues the query now binds its own signal. Thanks @orshih6 and @cootue.
 
 ## 0.9.3 — 2026-10-13
