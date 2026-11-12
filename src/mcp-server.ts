@@ -177,13 +177,17 @@ export function createToolServer(name: string, initialTools: McpToolDef[]) {
 		return { content, isError };
 	});
 
-	/** Replace the served tools mid-query and notify Claude Code. Resolves true once
-	 *  CC has re-listed — only then will its next request carry the new set — or
-	 *  false after RELIST_TIMEOUT_MS. */
-	async function setTools(next: McpToolDef[]): Promise<boolean> {
+	/** Replace the served tools and notify CC. The swap is synchronous and throws
+	 *  on an invalid schema, leaving the served set as it was. The returned promise
+	 *  resolves true once CC has re-listed, false after RELIST_TIMEOUT_MS. */
+	function setTools(next: McpToolDef[]): Promise<boolean> {
 		for (const tool of next) assertObjectSchema(tool);
 		tools = next;
 		byName = new Map(tools.map((tool) => [tool.name, tool]));
+		return announceToolsChanged();
+	}
+
+	async function announceToolsChanged(): Promise<boolean> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const relisted = new Promise<boolean>((resolve) => {
 			relistWaiters.push(() => resolve(true));
