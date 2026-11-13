@@ -1,5 +1,5 @@
-// /claude-account: the command and its subcommands, the panel host, and the
-// session wiring that restores each session's account and shows it in the footer.
+// /claude-account: the command and its subcommands, the menu a bare command opens,
+// and the session wiring that restores each session's account and shows it in the footer.
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { SwitchAllListener, type SwitchAllNotice } from "./account-broadcast.js";
@@ -16,12 +16,16 @@ import {
 	type AccountEntryData,
 } from "./accounts.js";
 import { AccountService, type Result } from "./account-service.js";
-import { AccountsPanel } from "./accounts-panel.js";
 import { loadConfig } from "./config.js";
-import { BOX_WIDTH } from "./panel-box.js";
 import { readAuthStatus, signOut, startSignin, type AuthStatus, type SigninRun } from "./signin.js";
 
 export const STATUS_KEY = "claude-account";
+
+// Shown while a browser sign-in runs: claude auth login's own page cannot tell
+// the user which step to take next.
+const SIGNIN_HELP = "On Claude's page, enter the account's email, click the link in the email, then Authorize.";
+
+const plan = (type?: string) => (type ? type[0]!.toUpperCase() + type.slice(1) : undefined);
 
 // The one listener per process that applies "use in all sessions" notices. It
 // belongs to the top-level session; an in-process subagent session never claims
@@ -169,7 +173,7 @@ export function registerAccounts(pi: ExtensionAPI, deps: AccountsWiringDeps = {}
 		const usage = () => ctx.ui.notify("usage: /claude-account [<name> | use <name> | all <name> | add <name> | default <name> | rename <old> <new> | list | remove <name>]", "warning");
 
 		if (!sub) {
-			if (ctx.mode === "tui") await openPanel(ctx);
+			if (ctx.mode === "tui") await openMenu(ctx);
 			else ctx.ui.notify(await listText(), "info");
 			return;
 		}
@@ -228,16 +232,96 @@ export function registerAccounts(pi: ExtensionAPI, deps: AccountsWiringDeps = {}
 		return [...(problem ? [`Accounts file problem: ${problem}`] : []), ...lines].join("\n");
 	}
 
-	async function openPanel(ctx: ExtensionCommandContext): Promise<void> {
-		await ctx.ui.custom<void>(
-			(tui, theme, _keybindings, done) => new AccountsPanel({
-				service,
-				readStatus,
-				theme,
-				requestRender: () => tui.requestRender(),
-				onClose: () => done(undefined),
-			}),
-			{ overlay: true, overlayOptions: { anchor: "center", width: BOX_WIDTH } },
-		);
+	/** A bare /claude-account: pick an account to switch to, or one of the
+	 *  management actions. Each step is a standard pi dialog. */
+	async function openMenu(ctx: ExtensionCommandContext): Promise<void> {
+		const report = (result: Result<unknown>, text: string) => {
+			if (result.ok) ctx.ui.notify(text, "info");
+			else ctx.ui.notify((result as { reason: string }).reason, "warning");
+		};
+		for (;;) {
+			const { registry } = service.load();
+			const statuses = await Promise.all(registry.accounts.map((account) => readStatus(account)));
+			const row = (account: Account, status: AuthStatus) => {
+				const active = account.id === getActiveAccount().id ? "●" : "○";
+				const detail = status.loggedIn
+					? [status.email, plan(status.subscriptionType)].filter(Boolean).join(" · ")
+					: "signed out";
+				const isDefault = account.id === registry.default ? " · default" : "";
+				return `${active} ${account.name} — ${detail}${isDefault}`;
+			};
+			const rows = registry.accounts.map((account, i) => row(account, statuses[i]!));
+			const ALL = "Use in every open session…";
+			const ADD = "Add account…";
+			const RENAME = "Rename an account…";
+			const REMOVE = "Remove an account…";
+			const DEFAULT = "Set default account…";
+			const choice = await ctx.ui.select("Claude accounts", [...rows, ALL, ADD, RENAME, REMOVE, DEFAULT]);
+			if (choice === undefined) return;
+
+			const picked = rows.indexOf(choice);
+			if (picked >= 0) {
+				const account = registry.accounts[picked]!;
+				report(service.switchTo(account.name), `This session now uses ${account.name} (from the next turn).`);
+				continue;
+			}
+
+			if (choice === ALL) {
+				const name = await pick(ctx, registry.accounts, "Switch every open session to which account?");
+				if (name === undefined) return;
+				report(service.switchAll(name), `This session and every open session now use ${name} (from the next turn).`);
+				continue;
+			}
+
+			if (choice === ADD) {
+				const name = (await ctx.ui.input("Name for the new account:", "work"))?.trim();
+				if (!name) return;
+				ctx.ui.notify(`Opening your browser to sign in ${name}…`, "info");
+				const result = await service.add(name, () => ctx.ui.notify(SIGNIN_HELP, "info"));
+				if (!result.ok) {
+					report(result, "");
+					continue;
+				}
+				const as = result.value.status.email ? ` as ${result.value.status.email}` : "";
+				const note = result.value.rewritten ? "" : " The browser opened without the sign-out step.";
+				report(result, `Signed in ${name}${as}.${note}`);
+				continue;
+			}
+
+			if (choice === RENAME) {
+				const name = await pick(ctx, registry.accounts, "Rename which account?");
+				if (name === undefined) return;
+				const next = (await ctx.ui.input(`New name for ${name}:`, name))?.trim();
+				if (!next) return;
+				report(service.rename(name, next), `Renamed ${name} to ${next}.`);
+				continue;
+			}
+
+			if (choice === REMOVE) {
+				const name = await pick(ctx, registry.accounts, "Remove which account?");
+				if (name === undefined) return;
+				if (!(await ctx.ui.confirm("Claude accounts", `Remove ${name}? This signs it out and deletes its folder.`))) {
+					ctx.ui.notify(`Kept ${name}.`, "info");
+					continue;
+				}
+				const result = await service.remove(name);
+				const moved = result.ok && result.value.switchedTo ? ` This session now uses ${result.value.switchedTo.name}.` : "";
+				const kept = result.ok && result.value.keptFolder ? ` Its folder was kept: ${result.value.keptFolder}` : "";
+				report(result, `Removed ${name}.${moved}${kept}`);
+				continue;
+			}
+
+			if (choice === DEFAULT) {
+				const name = await pick(ctx, registry.accounts, "New sessions start on which account?");
+				if (name === undefined) return;
+				report(service.setDefault(name), `New sessions start on ${name}.`);
+				continue;
+			}
+		}
+	}
+
+	/** One account name from a select dialog. Undefined when the user cancels. */
+	async function pick(ctx: ExtensionCommandContext, accounts: Account[], title: string): Promise<string | undefined> {
+		return ctx.ui.select(title, accounts.map((account) => account.name));
 	}
 }

@@ -14,9 +14,9 @@ const bc = await import("../src/account-broadcast.js");
 let root;
 const WORK = () => ({ id: "a1b2c3d4", name: "work", configDir: join(root, "accounts", "a1b2c3d4") });
 
-function harness({ accounts = [WORK()], defaultId = "launch" } = {}) {
+function harness({ accounts = [WORK()], defaultId = "launch", select = [], input = [], confirm = true } = {}) {
 	acc.saveRegistry(root, { version: 1, default: defaultId, accounts: [{ ...acc.LAUNCH_ACCOUNT }, ...accounts] });
-	const handlers = new Map(), entries = [], commands = new Map(), notes = [], statuses = [];
+	const handlers = new Map(), entries = [], commands = new Map(), notes = [], statuses = [], selects = [], inputs = [];
 	const pi = {
 		on: (event, h) => handlers.set(event, [...(handlers.get(event) ?? []), h]),
 		registerCommand: (name, options) => commands.set(name, options),
@@ -31,13 +31,14 @@ function harness({ accounts = [WORK()], defaultId = "launch" } = {}) {
 	const ui = {
 		notify: (text, kind) => notes.push([kind, text]),
 		setStatus: (key, text) => statuses.push([key, text]),
-		confirm: async () => true,
-		custom: async () => { notes.push(["custom", "panel"]); },
+		confirm: async (title) => { notes.push(["confirm", title]); return confirm; },
+		select: async (title, items) => { selects.push([title, items]); return select.shift(); },
+		input: async (title, placeholder) => { inputs.push([title, placeholder]); return input.shift(); },
 	};
 	const ctx = (over = {}) => ({ ui, mode: "tui", hasUI: true, model: { baseUrl: "claude-bridge" }, sessionManager: { getBranch: () => entries }, ...over });
 	const emit = async (event, e, c) => { for (const h of handlers.get(event) ?? []) await h(e, c); };
 	const run = (args, c = ctx()) => commands.get("claude-account").handler(args, c);
-	return { entries, commands, notes, statuses, ctx, emit, run };
+	return { entries, commands, notes, statuses, selects, inputs, ctx, emit, run };
 }
 
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "account-command-")); });
@@ -116,12 +117,58 @@ describe("subcommands", () => {
 		assert.deepEqual(h.notes.at(-1), ["info", "● default  default@x.io · max\n  work  work@x.io · max  (default)"]);
 	});
 
-	it("a bare command opens the panel in the TUI and lists otherwise", async () => {
+	it("a bare command opens the account menu in the TUI and lists otherwise", async () => {
 		const h = harness();
 		await h.run("");
-		assert.deepEqual(h.notes.at(-1), ["custom", "panel"]);
+		assert.deepEqual(h.selects.at(-1), ["Claude accounts", [
+			"● default — default@x.io · Max · default",
+			"○ work — work@x.io · Max",
+			"Use in every open session…",
+			"Add account…",
+			"Rename an account…",
+			"Remove an account…",
+			"Set default account…",
+		]]);
 		await h.run("", h.ctx({ mode: "rpc" }));
 		assert.match(h.notes.at(-1)[1], /work/);
+	});
+
+	it("picking an account in the menu switches to it", async () => {
+		const h = harness({ select: ["○ work — work@x.io · Max"] });
+		await h.run("");
+		assert.equal(acc.getActiveAccount().name, "work");
+		assert.deepEqual(h.notes.at(-1), ["info", "This session now uses work (from the next turn)."]);
+	});
+
+	it("the menu sets the default account", async () => {
+		const h = harness({ select: ["Set default account…", "work"] });
+		await h.run("");
+		assert.equal(acc.loadRegistry(root).registry.default, "a1b2c3d4");
+		assert.deepEqual(h.notes.at(-1), ["info", "New sessions start on work."]);
+	});
+
+	it("the menu renames and removes an account after confirmation", async () => {
+		const h = harness({ select: ["Rename an account…", "work"], input: ["job"] });
+		await h.run("");
+		assert.ok(acc.byName(acc.loadRegistry(root).registry, "job"), "renamed");
+		const gone = harness({ select: ["Remove an account…", "job"] });
+		await gone.run("");
+		assert.equal(acc.byName(acc.loadRegistry(root).registry, "job"), undefined);
+	});
+
+	it("the menu signs in an added account and keeps the menu open", async () => {
+		const h = harness({ accounts: [], select: ["Add account…", "Add account…"], input: ["personal", "second"] });
+		await h.run("");
+		const names = acc.loadRegistry(root).registry.accounts.map((account) => account.name);
+		assert.deepEqual(names, ["default", "personal", "second"]);
+		assert.ok(h.notes.some(([, text]) => text.includes("click the link in the email")), "sign-in help shown");
+	});
+
+	it("closing the menu changes nothing", async () => {
+		const h = harness();
+		await h.run("");
+		assert.equal(acc.getActiveAccount().id, "launch");
+		assert.deepEqual(h.notes, []);
 	});
 
 	it("remove needs a UI to confirm", async () => {
