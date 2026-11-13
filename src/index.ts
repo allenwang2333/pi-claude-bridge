@@ -31,6 +31,7 @@ import { accountClaudeDir, accountEnv, getActiveAccount, signedOutText } from ".
 import { registerAccounts } from "./account-command.js";
 import { createToolServer, type ToolServer } from "./mcp-server.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
+import { SystemUpdates } from "./system-updates.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
@@ -879,10 +880,11 @@ function resolveMcpTools(context: Context): {
 // Handlers close over the captured `queryCtx`, ensuring they operate on the
 // correct query's state while multiple queries run concurrently.
 function toMcpToolDefs(tools: Tool[], queryCtx: QueryContext) {
-	return tools.map((tool) => ({
+	const definitions = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
 		inputSchema: tool.parameters,
+		alwaysLoad: queryCtx.systemUpdates ? false : undefined,
 		handler: async (toolCallId: string) => {
 			queryCtx.dispatchedToolCalls.add(toolCallId);
 			if (queryCtx.pendingResults.has(toolCallId)) {
@@ -897,10 +899,21 @@ function toMcpToolDefs(tools: Tool[], queryCtx: QueryContext) {
 			});
 		},
 	}));
+	// CC only enables deferred-tool scaffolding when at least one deferred tool
+	// exists. Keep one from the first request, even when pi has no active tools.
+	if (queryCtx.systemUpdates) definitions.push({
+		name: "__pi_deferred_placeholder__",
+		description: "Reserved placeholder. Never available. Never call this.",
+		inputSchema: { type: "object", properties: {} } as Tool["parameters"],
+		alwaysLoad: false,
+		handler: async (toolCallId: string): Promise<McpResult> => ({ toolCallId, isError: true,
+			content: [{ type: "text", text: "Reserved placeholder. Not a callable pi tool." }] }),
+	});
+	return definitions;
 }
 
 function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ToolServer> | undefined {
-	if (!tools.length) return undefined;
+	if (!tools.length && !queryCtx.systemUpdates) return undefined;
 	return { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, toMcpToolDefs(tools, queryCtx)) };
 }
 
@@ -1792,6 +1805,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// prompt-capture lookup below assumes (issue #106).
 	const traceCallId = traceId("call");
 	const sourceContext = context;
+	const nativeUpdates = context.messages.some((message) => message.role === "system" && message.sections !== undefined);
 	context = toBridgeContext(context);
 	traceInput(traceCallId, sourceContext, context, model, options);
 
@@ -1874,6 +1888,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// (everything after the last assistant message) and match against waiting MCP
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (resultCtx) {
+		if (resultCtx.systemUpdates) {
+			try { resultCtx.systemUpdates.update(promptCaptures.resolveOrDerive(context.systemPrompt)?.sections ?? {}); }
+			catch (error) { return failBeforeQuery(error); }
+		}
 		claimCurrentPiStream(stream, "tool-result", resultCtx, options);
 		resultCtx.resetTurnState(model);
 		resultCtx.bindRunSignal?.(options?.signal, stream);
@@ -1948,7 +1966,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		traceAssertReady();
 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
 		systemPromptAppend = promptCapture
-			? projectPromptCapture(promptCapture, {
+			? projectPromptCapture(nativeUpdates ? { ...promptCapture, sections: {} } : promptCapture, {
 				hasReadTool: mcpTools.some((tool) => tool.name === "read"),
 			})
 			: undefined;
@@ -1990,6 +2008,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const promptDigest = createHash("sha256").update(systemPromptAppend ?? "").digest("hex");
 		const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId, traceCallId, promptDigest);
 		if (syncResult.created) createdBeforeLaunch = { id: syncResult.targetSessionId, cwd };
+		if (nativeUpdates) queryCtx.systemUpdates = new SystemUpdates(
+			syncResult.state?.nativeSections,
+			promptCapture?.sections ?? {}, syncResult.created,
+		);
 		// This query starts from the history pi has now: consume this session's
 		// armed rewrite — a sibling pi session's stays armed for its own queries.
 		if (piSessionId) historyRewrittenBySession.delete(piSessionId);
@@ -2085,8 +2107,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		const childProcess = new QueryProcess(cliDebug.stderr);
 		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 			cwd,
-			env: childEnv,
-			tools: [],
+			env: nativeUpdates ? { ...childEnv, ENABLE_TOOL_SEARCH: "true" } : childEnv,
+			tools: nativeUpdates ? ["ToolSearch"] : [],
+			...(nativeUpdates ? { hooks: {
+				UserPromptSubmit: [{ hooks: [async () => {
+					const additionalContext = queryCtx.systemUpdates?.take();
+					return additionalContext ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit" as const, additionalContext } } : {};
+				}] }],
+				PostToolUse: [{ hooks: [async () => {
+					const additionalContext = queryCtx.systemUpdates?.take();
+					return additionalContext ? { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext } } : {};
+				}] }],
+				PostToolUseFailure: [{ hooks: [async () => {
+					const additionalContext = queryCtx.systemUpdates?.take();
+					return additionalContext ? { hookSpecificOutput: { hookEventName: "PostToolUseFailure" as const, additionalContext } } : {};
+				}] }],
+			} } : {}),
 			permissionMode: "bypassPermissions",
 			includePartialMessages: true,
 			// User settings only. A repo's .claude/settings.json and settings.local.json can
@@ -2101,7 +2137,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// diag/probe-git-cache.mjs). The bridge re-invokes CC per turn, so this
 			// hit on every transition. Cost here is nil: the setting also strips
 			// CC's git-workflow guidance from its Bash tool prompt, but the provider
-			// path runs CC with `tools: []`, so those definitions never ship.
+			// path never enables CC's Bash tool, so those definitions never ship.
 			settings: {
 				...claudeCodeSettings(providerSettings),
 				claudeMdExcludes: CLAUDE_MD_EXCLUDES,
@@ -2165,6 +2201,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (!dirty && (recording.hasGaps || (syncResult.created && !recording.hasProgress))) debug(`recording: clean end left messages unrecorded ${sessionTag(piSessionId)}`);
 			if (piSessionId == null || sessionStateFor(piSessionId) !== expectedState || (syncResult.created && !recording.hasProgress)) return;
 			const state: SessionState = { ...copyRecording(recording.recorded), ccSessionId: syncResult.targetSessionId, cwd, model: cliModel, promptDigest,
+				...(queryCtx.systemUpdates ? { nativeSections: queryCtx.systemUpdates.sections } : {}),
 				dirtyTail: dirty || queryCtx.historyStale || recording.hasGaps };
 			setSessionStateFor(piSessionId, state);
 			expectedState = unsaved = state;

@@ -54,6 +54,10 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 	if (!Array.isArray(stored.digests) || !Array.isArray(stored.uuids) || !Array.isArray(stored.cuttable)) {
 		return reject(onReject, "digests, uuids, and cuttable must be arrays");
 	}
+	if (stored.nativeSections !== undefined && (stored.nativeSections === null || typeof stored.nativeSections !== "object"
+		|| Array.isArray(stored.nativeSections) || Object.values(stored.nativeSections).some((value) => typeof value !== "string"))) {
+		return reject(onReject, "nativeSections must be a string map");
+	}
 	try {
 		validateRecording({ digests: stored.digests as string[], uuids: stored.uuids as (string | null)[], cuttable: stored.cuttable as boolean[] });
 	} catch (error) {
@@ -65,6 +69,7 @@ export function loadSessionState(piSessionId: string, onReject: (message: string
 		cwd: stored.cwd as string,
 		model: stored.model as string,
 		promptDigest: stored.promptDigest as string,
+		...(stored.nativeSections !== undefined ? { nativeSections: stored.nativeSections as Record<string, string> } : {}),
 		digests: stored.digests as string[],
 		uuids: stored.uuids as (string | null)[],
 		cuttable: stored.cuttable as boolean[],
@@ -91,6 +96,7 @@ export function saveSessionState(piSessionId: string, state: SessionState): void
 		digests: state.digests,
 		uuids: state.uuids,
 		cuttable: state.cuttable,
+		...(state.nativeSections !== undefined ? { nativeSections: state.nativeSections } : {}),
 	});
 	writeFileSync(tempPath, contents, { flag: "wx", mode: 0o600 });
 	chmodSync(tempPath, 0o600);

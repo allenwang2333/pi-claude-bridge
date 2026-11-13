@@ -43,6 +43,7 @@ interface McpToolDef {
 	name: string;
 	description: string;
 	inputSchema: unknown;
+	alwaysLoad?: boolean;
 	handler: (toolCallId: string) => Promise<McpResult>;
 }
 
@@ -157,6 +158,7 @@ export function createToolServer(name: string, initialTools: McpToolDef[]) {
 					name: tool.name,
 					description: [note, tool.description].filter(Boolean).join("\n\n"),
 					inputSchema: schema,
+					...(tool.alwaysLoad !== undefined ? { _meta: { "anthropic/alwaysLoad": tool.alwaysLoad } } : {}),
 				};
 			}),
 		};

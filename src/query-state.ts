@@ -12,6 +12,7 @@ import type { ToolServer } from "./mcp-server.js";
 import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
 import type { RateLimitInfo } from "./rate-limit.js";
+import type { SystemUpdates } from "./system-updates.js";
 
 export function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
 	return {
@@ -90,6 +91,8 @@ export class QueryContext {
 	/** The query's MCP server and the pi tools it serves; see syncServedTools. */
 	toolServer: ToolServer | null = null;
 	servedToolNames: string[] = [];
+	/** Present for structured pi prompts: schemas are native-deferred, sections use SDK hooks. */
+	systemUpdates: SystemUpdates | undefined;
 	/** The SDK→pi name map consumeQuery reads; updated in place. */
 	toolNameToPi: Map<string, string> | null = null;
 	/** Last rate-limit rejection seen on this query. Claude Code sends it just before the

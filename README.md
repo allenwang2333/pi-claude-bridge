@@ -125,7 +125,7 @@ The bridge forwards pi's structured parts: project context files, skills, custom
 | `context` editing the last user message | Yes, as literal prompt text |
 | `--append-system-prompt` | Yes, with pi's appended instructions |
 | `context_with_system` editing the system message | Yes when it wraps pi's prompt; the turn fails when it replaces it |
-| `before_agent_start` -> `systemPromptOptions.sections` | Yes, one `<name>` block per section |
+| `before_agent_start` -> `systemPromptOptions.sections` | Yes, persisted SDK hook context; a later system message on current Claude models |
 | `before_agent_start` -> `systemPrompt` | No, dropped |
 
 Two things to watch for:
@@ -191,7 +191,11 @@ Native records before the matching point keep their attachments. A rewritten suf
 
 ### Changed instructions cost a cache miss
 
-When project context (AGENTS.md/CLAUDE.md), skills, or extension-written instructions change (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees them. That turn re-sends the conversation uncached and drops earlier thinking. An extension that rewrites its system prompt section every turn pays this on every turn.
+When project context (AGENTS.md/CLAUDE.md), skills, or the custom/append prompt changes (for example, after an edit and `/reload`), the next turn imports the conversation into a new Claude Code session so the model sees it. That turn can miss cache and drop earlier thinking.
+
+Custom prompt sections (`systemPromptOptions.sections`) do not change the leading append. The bridge sends additions, edits and removals through SDK hooks, once per change. With structured pi prompts, every pi tool is native-deferred through Claude Code's `ToolSearch`; a reserved deferred placeholder keeps the cache scaffolding present from the first request, including with no active pi tools. Enabling or disabling `/dynamic-workflow` therefore does not replace the cached prompt prefix. The first use of a tool can require an extra search call. This uses the SDK's supported interfaces, not an HTTP request rewrite.
+
+A session already running the old eager-tool layout needs one cache warm-up after updating. Opaque/systemless provider calls keep the older eager-tool path.
 
 ### Exported Anthropic environment variables override the Claude Code child (issue #107)
 

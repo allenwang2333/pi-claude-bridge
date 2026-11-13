@@ -19,6 +19,8 @@ export interface SessionState extends Recording {
 	/** Digest of the system prompt append CC recorded for this session, which it
 	 *  replays on every resume until a full import. */
 	promptDigest: string;
+	/** Custom sections already delivered as native system context, outside the preset append. */
+	nativeSections?: Record<string, string>;
 	dirtyTail: boolean;
 }
 

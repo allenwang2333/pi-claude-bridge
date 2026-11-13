@@ -52,6 +52,32 @@ type PromptCaptureDiagnostic = {
 	matches: { key: string; firstDivergent: number; source?: string }[];
 };
 
+/** The order custom sections take in a replayed prompt. Code-unit order, not
+ *  localeCompare, so both sides of the lookup agree on every machine. */
+export function compareSectionNames(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * `systemPrompt` with its custom sections sorted by name, or undefined when that is the
+ * prompt itself or the prompt does not end with `sections` as pi's builder renders them.
+ *
+ * The builder orders custom sections by `systemPromptOptions.sections` insertion, which
+ * the transcript replay cannot know: a section an extension adds mid-session from a
+ * before_agent_start handler that runs before pi's MCP extension (as /dynamic-workflow
+ * does) precedes `mcp_servers` in the builder's prompt but follows it in the replay.
+ */
+function withSortedSections(systemPrompt: string, sections: Record<string, string> | undefined): string | undefined {
+	const rendered = Object.entries(sections ?? {})
+		.filter(([, content]) => content)
+		.map(([name, content]) => ({ name, text: `<${name}>\n${content}\n</${name}>` }));
+	if (rendered.length < 2) return undefined;
+	const tail = rendered.map((section) => section.text).join("\n\n");
+	if (!systemPrompt.endsWith(`\n\n${tail}`)) return undefined;
+	const sorted = [...rendered].sort((a, b) => compareSectionNames(a.name, b.name)).map((section) => section.text).join("\n\n");
+	return sorted === tail ? undefined : systemPrompt.slice(0, -tail.length) + sorted;
+}
+
 export class PromptCaptures {
 	private readonly captures = new Map<string, PromptCapture>();
 	/** Invoked with everything that would otherwise be lost when resolution throws,
@@ -101,6 +127,10 @@ export class PromptCaptures {
 		// Mutate an existing node in place so descendants retain a live reference,
 		// then re-insert its key so Map order tracks recency.
 		this.touch(systemPrompt, capture);
+		// The transcript replay sorts custom sections by name (toBridgeContext), so key the
+		// capture under that order too.
+		const sortedKey = withSortedSections(systemPrompt, capture.sections);
+		if (sortedKey) this.touch(sortedKey, capture);
 	}
 
 	/** Exact lookup only. Callers serving a query want `resolveOrDerive`. */

@@ -53,6 +53,12 @@ describe("session state persistence", () => {
 		assert.equal(statSync(file).mode & 0o777, 0o600);
 	});
 
+	it("round-trips delivered native sections so restart does not repeat them", () => {
+		const value = { ...state, nativeSections: { dynamic_workflow: "workers enabled", mcp_servers: "M" } };
+		saveSessionState("native", value);
+		assert.deepEqual(loadSessionState("native", assert.fail), { ...value, dirtyTail: true });
+	});
+
 	it("accepts intentional null-uuid omissions and returns null for a missing file", () => {
 		assert.equal(loadSessionState("missing", assert.fail), null);
 		saveSessionState("omission", { ...state, uuids: [null, "u2"], cuttable: [false, true] });
@@ -74,6 +80,7 @@ describe("session state persistence", () => {
 			["aligned", JSON.stringify({ ...validFile(), uuids: ["u1"] })],
 			["Invalid session recording slot 0", JSON.stringify({ ...validFile(), uuids: [null, null] })],
 			["Invalid session recording slot 0", JSON.stringify({ ...validFile(), uuids: ["", null] })],
+			...[null, [], "bad", { workflow: 4 }].map((nativeSections) => ["nativeSections must be a string map", JSON.stringify({ ...validFile(), nativeSections })]),
 		];
 		for (const [index, [reason, contents]] of cases.entries()) {
 			const id = `invalid-${index}`;

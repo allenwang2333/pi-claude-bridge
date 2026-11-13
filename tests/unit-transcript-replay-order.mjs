@@ -14,6 +14,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { __test } from "../src/index.js";
+import { PromptCaptures } from "../src/prompt-capture.js";
+import {
+	buildSystemPrompt,
+	buildSystemPromptState,
+	diffSystemPromptSections,
+} from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
 const { toBridgeContext } = __test;
 
@@ -129,5 +135,50 @@ describe("toBridgeContext section replay order", () => {
 	it("returns a context without system messages unchanged (systemless call shape)", () => {
 		const context = { messages: [userMessage("go")], systemPrompt: "P", tools: [] };
 		assert.equal(toBridgeContext(context), context, "same object reference — a true no-op");
+	});
+});
+
+
+// An extension that adds a custom section mid-session from a before_agent_start handler
+// that runs before pi's MCP extension (as /dynamic-workflow does). pi's builder orders
+// customs by `systemPromptOptions.sections` insertion: dynamic_workflow, mcp_servers. The
+// transcript patch only carries the new section, so the replay keeps mcp_servers first.
+describe("custom section order", () => {
+	const firstRun = { cwd: "/w", sections: { mcp_servers: "M" } };
+	const laterRun = { cwd: "/w", sections: { dynamic_workflow: "W", mcp_servers: "M" } };
+
+	function transcript() {
+		const first = buildSystemPromptState(firstRun);
+		const later = buildSystemPromptState(laterRun);
+		return [
+			systemMessage(first),
+			userMessage("hi"),
+			systemMessage({ sections: diffSystemPromptSections(first.sections, later.sections) }),
+			userMessage("go"),
+		];
+	}
+
+	it("sorts custom sections by name, whatever order the replay holds them in", () => {
+		const replayed = replayedSystemPrompt(transcript());
+		assert.ok(
+			replayed.endsWith("<dynamic_workflow>\nW\n</dynamic_workflow>\n\n<mcp_servers>\nM\n</mcp_servers>"),
+			replayed,
+		);
+	});
+
+	it("resolves the capture pi's builder recorded for that run", () => {
+		const captures = new PromptCaptures();
+		// What agent_start records: ctx.getSystemPrompt() and the run's sections.
+		captures.record(buildSystemPrompt(laterRun), { contextFiles: [], skills: [], sections: laterRun.sections }, "agent_start");
+
+		const found = captures.resolveOrDerive(replayedSystemPrompt(transcript()));
+		assert.equal(found?.assembledPrompt, buildSystemPrompt(laterRun));
+	});
+
+	it("still resolves the builder's own order, as a sub-agent embedding it sends", () => {
+		const captures = new PromptCaptures();
+		captures.record(buildSystemPrompt(laterRun), { contextFiles: [], skills: [], sections: laterRun.sections });
+
+		assert.ok(captures.resolveOrDerive(buildSystemPrompt(laterRun)));
 	});
 });

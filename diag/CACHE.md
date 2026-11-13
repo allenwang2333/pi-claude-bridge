@@ -173,15 +173,26 @@ The contract test `tests/int-cc-contracts.mjs` compares only init tool names and
 
 Evidence: `tests/int-cc-contracts.mjs` tests "routing through the capture proxy does not change what CC sends" and "a truncating fork preserves parallel results outside the leaf's parent path" (679fdfe6); `noop-rebuild` and `thinking-rebuild` reruns with the override (2026-10-21); ad hoc SDK model-switch probe; `probe-cache-mutations.mjs` case `rotate-session-id`; `steer-parallel` (2026-10-21) and an ad hoc SDK steer probe.
 
+## Native deferred workflow verification (2026-11-13)
+
+`probe-workflow-cache.mjs` passed against the installed bridge with pi 1.5.2 and Agent SDK 0.3.323. The capture proxy checked identical leading system text (excluding the billing header), identical non-deferred schemas, and native system-message delivery of `dynamic_workflow`. On/off, deferred `read`, and a pi restart retained cache reads. No workers were launched.
+
+| Model | Control cache read | Enable workers | Disable workers | After restart |
+|---|---:|---:|---:|---:|
+| Haiku 5.5 | 7,191 | 7,350 | 8,873 | 9,148 |
+| Opus 5.5 | 5,884 | 6,458 | 7,731 | 7,957 |
+
+These are per-request `cache_read_input_tokens`, not turn-summed usage. Captures for this run are under `/tmp/pi-native-deferred-capture-final`; the reproducible probe asserts the wire prefix and cache reads, not just successful replies. A pre-existing eager-tool session needs one cache warm-up when switching to this layout.
+
 ## Known gaps and open questions
 
 Numbered so `TODO.md` can refer to them.
 
 Bridge behavior with a known cost:
 
-- **C1. A changed tool set may not reach CC until a full import.** Reuse, forks and prefix-writes keep CC's `prompt_snapshot`, which holds the tools as well as the system prompt, and CC replays it on resume. A changed append takes a full import; a changed tool set does not, so CC may keep the old list. Inferred from the code. Fix: TODO #13.
+- **C1. Dynamic tools now use native deferred loading for structured pi prompts.** The bridge enables SDK `ToolSearch` from startup, marks pi schemas `anthropic/alwaysLoad:false`, and always serves a reserved deferred placeholder. Adding/removing tools no longer changes the non-deferred schema prefix. Opaque/systemless calls keep the eager-tool path. Reproduce with `node --import tsx diag/probe-workflow-cache.mjs /path/to/warehouse/extensions/index.ts` behind the capture proxy on port 18879.
 - **C2. Replaced session files pile up, and a fork's saved tool results can expire.** A fork's kept records, and the tool results a write copies, point into an earlier session's `tool-results/`, which is no longer written, so CC's 30-day cleanup can delete it while the fork still refers to it. The expiry is inferred from the code. TODO: Deferred, "Superseded session files pile up".
-- **C3. A changed system prompt append costs a full import.** The append holds the context files, skills and extension sections the bridge forwards. An extension that rewrites its section on every turn pays this on every turn, and so does a tool set that gains or loses pi's `read`, which adds or drops the skills block (`hasRead` in `src/index.ts`). TODO: Deferred, "Keep the cache when instructions change".
+- **C3. A changed base system prompt append still costs a full import.** The append holds context files, skills and custom/append prompt text. Custom extension sections now travel through SDK hooks as persistent context, outside that append: on current Claude models the wire has a later system message, and the bridge saves the delivered section map for resume. Rebuilds/forks reset that map authoritatively; additions, edits and removals during normal reuse are sent once. Gaining/losing pi's `read` can still change the skills block (`hasRead` in `src/index.ts`).
 - **C4. A write does not reproduce CC's request between the cut and the first real difference.** The cut can sit before the first message pi changed, and a write rewrites everything after the cut from pi's form. That form differs from what CC sent: tool input `mapToolArgs` renamed or reparsed (CC-style names such as `file_path`, an `edits` JSON string); messages only CC has, such as the "No response requested." assistant CC inserts when it resumes a session that ends at a user message (#241's shape); and [context records](#context-records). Tool results pi holds unchanged are copied as CC recorded them. The read stops where the bytes first differ, and thinking blocks after that point are dropped. In every measured run the cut sat right before the edit, so this stretch was empty. Inferred from the code and `probe-writer.mjs`, not measured on a real gap.
 - **C5. A prompt-capture failure fails the turn (#232).** On omp, `closestKnown` in `src/prompt-capture.ts` met a capture key that was not a string. omp answered each failed turn by compacting and retrying, a full cache write each time: 4.16M write tokens in 42 minutes in the report. Why the key was not a string is unknown; not seen on pi.
 
