@@ -52,13 +52,14 @@ describe("system update delivery", () => {
 
 describe("native deferred provider", () => {
 	after(() => __test.setQuery(null));
-	it("keeps its preset append and CC session across on/off and defers every pi schema", async () => {
+	it("keeps its preset append and CC session across on/off, loads configured tools and defers the rest", async () => {
 		const handlers = activateWithMockPi();
 		// Capture the provider from the pinned stream's test entry point.
 		let provider;
 		const { default: activate } = await import("../src/index.js");
 		delete globalThis[Symbol.for("claude-bridge:activeStreamSimple")];
-		activate({ on: () => {}, registerProvider: (_name, value) => { provider = value; } });
+		activate({ on: () => {}, registerProvider: (_name, value) => { provider = value; },
+			getSettings: () => ({ defaultTools: ["+codemode"] }), getAllTools: () => [] });
 		const model = provider.models[0];
 		const sid = "native-deferred-unit";
 		__test.resetSharedSession(sid);
@@ -123,7 +124,8 @@ describe("native deferred provider", () => {
 			assert.deepEqual(call.options.tools, ["ToolSearch"]);
 			assert.equal(call.options.env.ENABLE_TOOL_SEARCH, "true");
 			assert.ok(call.tools.length);
-			assert.ok(call.tools.every((tool) => tool._meta?.["anthropic/alwaysLoad"] === false));
+			// read is a default tool; agent and the placeholder are not configured.
+			for (const tool of call.tools) assert.equal(tool._meta?.["anthropic/alwaysLoad"], tool.name === "read", tool.name);
 		}
 		assert.ok(calls[1].tools.some((tool) => tool.name === "agent"));
 		assert.ok(!calls[2].tools.some((tool) => tool.name === "agent"));

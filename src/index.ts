@@ -32,6 +32,7 @@ import { registerAccounts } from "./account-command.js";
 import { createToolServer, type ToolServer } from "./mcp-server.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { SystemUpdates } from "./system-updates.js";
+import { configuredToolNames } from "./configured-tools.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
 import { rateLimitResponse } from "./rate-limit.js";
@@ -790,6 +791,9 @@ setTraceNotifier((message) => {
 });
 const activeQueryContexts = new Set<QueryContext>();
 
+/** Tools Claude sees from the first request when sections use native updates; see configured-tools.ts. */
+let alwaysLoadedTools: () => ReadonlySet<string> = () => new Set();
+
 // Whoever had the old askClaude setting on lost the tool on upgrade. Warned at most once
 // per module instance, which pi's per-session reruns of the factory below share.
 let askClaudeWarningShown = false;
@@ -880,11 +884,12 @@ function resolveMcpTools(context: Context): {
 // Handlers close over the captured `queryCtx`, ensuring they operate on the
 // correct query's state while multiple queries run concurrently.
 function toMcpToolDefs(tools: Tool[], queryCtx: QueryContext) {
+	const loaded = queryCtx.systemUpdates ? alwaysLoadedTools() : undefined;
 	const definitions = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
 		inputSchema: tool.parameters,
-		alwaysLoad: queryCtx.systemUpdates ? false : undefined,
+		alwaysLoad: loaded ? loaded.has(tool.name) : undefined,
 		handler: async (toolCallId: string) => {
 			queryCtx.dispatchedToolCalls.add(toolCallId);
 			if (queryCtx.pendingResults.has(toolCallId)) {
@@ -2356,6 +2361,8 @@ export default function (pi: ExtensionAPI) {
 	debug(`bridge: version=${BRIDGE_VERSION} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
+	// Optional calls: hosts that load pi extensions (oh-my-pi) may not implement every API.
+	alwaysLoadedTools = () => configuredToolNames(pi.getSettings?.().defaultTools, pi.getAllTools?.() ?? []);
 	// Opus 4.6 and Sonnet 4.6 need these settings to know if they're eligible for 1M context
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.
