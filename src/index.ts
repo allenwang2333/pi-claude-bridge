@@ -27,6 +27,17 @@ import {
 	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments } from "./attachments.js";
+import { accountClaudeDir, accountEnv, getActiveAccount, signedOutText } from "./accounts.js";
+import { registerAccounts } from "./account-command.js";
+
+/** Claude Code's config directory for the active account: where its session files live. */
+const activeClaudeDir = (): string | undefined => accountClaudeDir(getActiveAccount());
+
+/** A result's failure text, restated when the active account is signed out. */
+function accountResultErrorText(message: SDKMessage): string | undefined {
+	const text = resultErrorText(message);
+	return text === undefined ? undefined : signedOutText(text, getActiveAccount()) ?? text;
+}
 import { createToolServer } from "./mcp-server.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
@@ -403,7 +414,7 @@ async function runIsolatedSummary(
 			prompt: promptText,
 			options: {
 				cwd,
-				env: traceQueryStart(traceQueryId, { kind: "isolated-summary", callId: traceCallId, model: cliModel }, ccChildEnv(options?.env)),
+				env: traceQueryStart(traceQueryId, { kind: "isolated-summary", callId: traceCallId, model: cliModel }, accountEnv(ccChildEnv(options?.env), getActiveAccount())),
 				settings: { autoMemoryEnabled: false },
 				tools: [],
 				strictMcpConfig: true,
@@ -443,7 +454,7 @@ async function runIsolatedSummary(
 				}
 			} else if (message.type === "result") {
 				logServedContextWindow("compact summary", message, model);
-				errorText = resultErrorText(message);
+				errorText = accountResultErrorText(message);
 				if (!errorText && message.subtype === "success") finalText = message.result || assistantText;
 			}
 		}
@@ -581,7 +592,7 @@ function syncSharedSession(
 	const compared = state ? compareHistory(digestMessages(priors), state) : { commonPrefix: 0, cutCount: 0, equal: false };
 	let missingFile = false;
 	if (state) {
-		try { statSync(getSessionPath(state.ccSessionId, state.cwd, process.env.CLAUDE_CONFIG_DIR)); }
+		try { statSync(getSessionPath(state.ccSessionId, state.cwd, activeClaudeDir())); }
 		catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			missingFile = true;
@@ -614,7 +625,7 @@ function syncSharedSession(
 		return { sessionId: state!.ccSessionId, targetSessionId: state!.ccSessionId, created: false, recorded: copyRecording(state!), state };
 	}
 	if (state) traceSnapshot({ callId: traceCallId, ccSession: state.ccSessionId, cwd: state.cwd, reason: "rebuild-rotate", writer: "no-known-writer" }, true);
-	const session = createSession({ projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR, model: modelId });
+	const session = createSession({ projectPath: cwd, claudeDir: activeClaudeDir(), model: modelId });
 	const targetSessionId = session.sessionId;
 	let recorded: Recording;
 	let records = 0;
@@ -1489,7 +1500,7 @@ async function consumeQuery(
 			queryCtx.sawResult = true;
 			traceEvent("query-result", { queryId: traceQueryId, subtype: message.subtype, isError: (message as any).is_error ?? null, ccSession: message.session_id, numTurns: (message as any).num_turns ?? null, usage: (message as any).usage ?? null });
 			logServedContextWindow("result", message, model);
-			resultError = resultErrorText(message);
+			resultError = accountResultErrorText(message);
 			// A result ends a turn, not necessarily the query: steers not yet replayed
 			// can still start a later turn.
 			if (resultError !== undefined || queryCtx.pendingSteerUuids.size === 0) queryCtx.promptStream?.end();
@@ -2032,7 +2043,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			kind: "provider", callId: traceCallId, piSessionId, reentrant: isReentrant, resume: resumeSessionId ?? null,
 			model: cliModel, effort: effort ?? null, servedToolNames: Object.fromEntries(customToolNameToSdk), mcpTools: mcpTools.map((t) => t.name),
 			signal: traceSignalId(options?.signal), digests: { systemPromptAppend },
-		}, ccChildEnv(options?.env));
+		}, accountEnv(ccChildEnv(options?.env), getActiveAccount()));
 		const cliDebug = makeCliDebugOptions("provider");
 		const childProcess = new QueryProcess(cliDebug.stderr);
 		const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
@@ -2245,13 +2256,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				stopWriting();
 				try { await persistRecording(); }
 				finally {
-					if (syncResult.created && !recording.hasProgress) deleteSession(syncResult.targetSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+					if (syncResult.created && !recording.hasProgress) deleteSession(syncResult.targetSessionId, cwd, activeClaudeDir());
 					releaseWriter();
 				}
 			});
 
 	})().catch((error) => {
-		if (createdBeforeLaunch) deleteSession(createdBeforeLaunch.id, createdBeforeLaunch.cwd, process.env.CLAUDE_CONFIG_DIR);
+		if (createdBeforeLaunch) deleteSession(createdBeforeLaunch.id, createdBeforeLaunch.cwd, activeClaudeDir());
 		queryCtx.promptStream?.fail(error instanceof Error ? error : new Error(errorMessage(error)));
 		queryCtx.promptStream = null;
 		if (queryCtx.discarded) return;
@@ -2266,6 +2277,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 // --- Extension registration ---
 
 export default function (pi: ExtensionAPI) {
+	registerAccounts(pi);
 	const config = loadConfig();
 	debug(`bridge: version=${BRIDGE_VERSION} sdk=${packageVersion("@anthropic-ai/claude-agent-sdk")} pi=${PI_VERSION}`);
 	debug("loadConfig:", JSON.stringify(config));

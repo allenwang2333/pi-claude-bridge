@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Add: several Claude accounts in one pi install (`/claude-account`)** — Each account is its own Claude Code config directory, so a session can run on a different subscription without restarting. Switch this session, every open session, or add, rename, remove and set the default. A switch rebuilds the Claude Code session in the new account's folder, so history carries over. Thanks @subaud-tools.
 - **Fix: tool calls rejected by Claude Code no longer hang the turn (#218)** — We now fail the turn if a tool call is rejected (e.g. because Claude Code permission hook blocked). Running tools are not canceled or undone. Unknown and wrong-case tool names are intentionally ignored so CC can retry itself. If CC sends invalid arguments it can now require a new user prompt to continue. Thanks @sonSunnoi.
 - **Add: Claude Mythos 5.2 and 5.1 with 1M context (#259)** — pi-ai doesn't list these access-gated models, so the bridge now adds them, cloned from the Fable releases they shipped beside. Measured at 1M on Max. Listed last in `/model`; requests fail on accounts without Mythos access. Thanks @borski.
 

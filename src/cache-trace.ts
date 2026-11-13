@@ -24,6 +24,7 @@ import type { Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai"
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { createHash, randomBytes } from "node:crypto";
 import { getSessionPath, normalizeProjectPath } from "cc-session-io";
+import { accountClaudeDir, getActiveAccount } from "./accounts.js";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -341,7 +342,7 @@ export function traceSnapshot(
 }
 
 function snapshot(r: TraceRun, fields: { ccSession: string; cwd: string; mirrorCwd?: string; reason: string; writer: SnapshotWriter }): Record<string, unknown> {
-	const jsonl = getSessionPath(fields.ccSession, normalizeProjectPath(fields.cwd), process.env.CLAUDE_CONFIG_DIR);
+	const jsonl = getSessionPath(fields.ccSession, normalizeProjectPath(fields.cwd), accountClaudeDir(getActiveAccount()));
 	const projectDir = dirname(jsonl);
 	const companion = jsonl.slice(0, -".jsonl".length);
 	if (!r.raw) return { ...fields, jsonl, recorded: false, bytes: existsSync(jsonl) ? statSync(jsonl).size : null };

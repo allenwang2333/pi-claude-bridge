@@ -2,6 +2,7 @@
 // not just parentUuid (2.1.308: bDt -> Zuo). Keep the physical prefix, including
 // siblings, snapshots and attachments; bridge changes always mint a fresh file.
 import { getSessionPath, parseJsonl, type JsonlRecord, type Session, type ToolResultBlock } from "cc-session-io";
+import { accountClaudeDir, getActiveAccount } from "./accounts.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
@@ -17,7 +18,7 @@ const chainEntry = (record: RecordEntry): boolean => ["user", "assistant", "atta
  * parses strictly; only an unterminated final line that fails to parse is an
  * append a crash cut short, and is not part of the transcript. */
 export function readTranscript(state: Pick<SessionState, "ccSessionId" | "cwd">): RecordEntry[] {
-	const text = readFileSync(getSessionPath(state.ccSessionId, state.cwd, process.env.CLAUDE_CONFIG_DIR), "utf8");
+	const text = readFileSync(getSessionPath(state.ccSessionId, state.cwd, accountClaudeDir(getActiveAccount())), "utf8");
 	const end = text.lastIndexOf("\n") + 1;
 	const records = parseJsonl(text.slice(0, end));
 	if (text.slice(end).trim()) {
